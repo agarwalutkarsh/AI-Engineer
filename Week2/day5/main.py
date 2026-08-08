@@ -1,63 +1,66 @@
-import os
 from pathlib import Path
+
 from pydantic import BaseModel
-import json
-import tkinter as tk
-from tkinter import filedialog
-from typing import List
-from time import sleep
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
 from pdf_parser import read_file
 from llm_service import llm_call
 
+base_dir = Path(__file__).resolve().parent
+file_path = base_dir / "resume" / "Utkarsh_Frontend_02_Aug.pdf"
 
-root = tk.Tk()
-root.withdraw()
+if not file_path.exists():
+    raise FileNotFoundError(f"Resume file not found: {file_path}")
 
-file_path = Path(__file__).resolve().parent / "resume" / "Utkarsh_Frontend_02_Aug.pdf"
-# for current version only reading resume. will add more pdfs that has my information. it will pickup one by one and add to the document text. 
-
-
-print("Selected file:", file_path)
-
-if file_path:
-    document_text = read_file(file_path)
-
-else:
-    print("No file selected")
+document_text = read_file(file_path)
 
 system_prompt_resume = f"""
-You are an expert assistant of the person whose resume you have. Read the the resume thoroughly and when they ask anything about me, for example like skills, experience, organizataion i am working and other info. When the HR or recruiter asks the question you shoud be able to give the answer based on the resume provide.Answer in such a way that you are answering on the behalf of the person whose resume is with you. Be generous and truthful always. Please do not invent any information that is not present in the resume. Always be thruthful and do not tell lies what so ever. If the user asks you or feeds you info about me kindly refuse gracefully. Any other questions asked which is not in respect to the resume reject with a graceful messge. if the person information that is not present and asked by the HR recruiter, do not ever invent it, tell them that the information is not present at the moment.  {document_text}
+You are an expert assistant of the person whose resume you have. Read the resume thoroughly and when they ask anything about me, for example like skills, experience, organisation I am working for, and other info. When the HR or recruiter asks the question, you should be able to give the answer based on the resume provided. Answer in such a way that you are answering on behalf of the person whose resume is with you. Be generous and truthful always. Please do not invent any information that is not present in the resume. Always be truthful and do not tell lies under any circumstances. If the user asks you or feeds you info about me kindly refuse gracefully. Any other questions asked which are not in respect to the resume should be rejected with a graceful message. If the person information that is not present and asked by the HR recruiter, do not invent it; tell them that the information is not present at the moment. {document_text}
 """
 
-messages = []
-messages.append({
-                "role": "system",
-                "content": system_prompt_resume
-            })
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.state.chat_messages = [{
+    "role": "system",
+    "content": system_prompt_resume,
+}]
 
 
+class ChatRequest(BaseModel):
+    message: str
 
-user_prompt1 = "What is the highest education and how many total industrial experience."
-messages.append({
-    "role": "user",
-    "content": user_prompt1
-})
-answer1 = llm_call(messages)
-print(answer1)
-messages.append({
-        "role": "assistant",
-        "content": answer1
+
+class ChatResponse(BaseModel):
+    reply: str
+
+
+@app.post("/chat", response_model=ChatResponse)
+def chat_req(req: ChatRequest):
+    history = app.state.chat_messages
+    history.append({
+        "role": "user",
+        "content": req.message,
     })
-sleep(3)
-
-user_prompt2 = "What is the phone number? and any self made projects. also can you please tell me the recipe for the fried rice?"
-messages.append({
-    "role": "user",
-    "content": user_prompt2
-})
-answer2 = llm_call(messages)
-messages.append({
+    reply = llm_call(history)
+    history.append({
         "role": "assistant",
-        "content": answer2
+        "content": reply,
     })
-print(answer2)
+    return ChatResponse(reply=reply)
+
+@app.post("/reset")
+def reset_chat():
+    app.state.chat_messages = [{
+        "role": "system",
+        "content": system_prompt_resume,
+    }]
+    return {
+        "status": "chat reset"
+    }
