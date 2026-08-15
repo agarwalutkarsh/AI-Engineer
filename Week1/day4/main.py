@@ -27,7 +27,7 @@ reponse_format={
 complaint = "I am Utkarsh, I have a complaint regarding the product I purchased. It is not functioning as expected and I would like to request a refund or a replacement. Please let me know the process for returning the product and getting my issue resolved. My email is abc@test.com and my phone number is 1234567890. Thank you."
 
 client = Groq(api_key=GROQ_API_KEY)
-model="llama-3.3-70b-versatile"
+model=os.getenv("MODEL")
 
 message = f"""From the following complaint, extract the name, phone number and email address and issue of the customer and return it in a json format. Complaint: {complaint}"""
 role = "user"

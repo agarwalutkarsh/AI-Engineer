@@ -12,7 +12,7 @@ if not GROQ_API_KEY:
     raise ValueError("GROQ_API_KEY is not set in the environment variables.")
 
 client = Groq(api_key=GROQ_API_KEY)
-model="llama-3.3-70b-versatile"
+model=os.getenv("MODEL")
 # message = "Hello, Groq! Can you tell me about recipe to make fried rice?"
 message = "Hello, Groq! Can you tell me about scrum call updates as i wasnt available for the call?"
 role = "user"

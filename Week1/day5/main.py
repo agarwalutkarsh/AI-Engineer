@@ -88,7 +88,7 @@ reponse_format={
 
 
 client = Groq(api_key=GROQ_API_KEY)
-model="llama-3.3-70b-versatile"
+model=os.getenv("MODEL")
 
 message = f"""From the following documnet extracted text, extract the years of experience, skills, tools and experience as to what the candidate has done in each of the companies and return it in a json format. Document extracted Text: {document_text}"""
 role = "user"
