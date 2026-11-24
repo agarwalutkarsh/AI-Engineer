@@ -1,5 +1,5 @@
 from typing import TypedDict
-from langgraph.graph import END, StateGraph
+from langgraph.graph import START, END, StateGraph
 
 # State
 class State(TypedDict):
@@ -42,7 +42,10 @@ builder.add_node("doubleIt", doubleIt)
 builder.add_node("finishIt", finishIt)
 
 # Set Entry Point
-builder.set_entry_point("doubleIt")
+# builder.set_entry_point("doubleIt") --- also works
+
+# This creates the edge from the start node - replacement to the set entry point function
+builder.add_edge(START, "doubleIt")
 
 # Add conditional Edge - source, which function to make decision, which node on what decision
 builder.add_conditional_edges("doubleIt", decisionMake, {"double": "doubleIt", "finish": "finishIt"})
@@ -56,4 +59,4 @@ graph = builder.compile()
 
 if __name__ == "__main__":
     result = graph.invoke({"number" : 5})
-    print(result)
+    print(f""" Final Result -  {result["number"]}""")
