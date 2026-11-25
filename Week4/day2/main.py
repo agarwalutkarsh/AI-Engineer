@@ -5,9 +5,10 @@ MATH & WEB SEARCH AI AGENT  -  simple explanation (read this first!)
 WHAT THIS PROGRAM DOES
 ----------------------
 You type a question. An LLM (Groq) answers it. If the LLM needs help,
-it can use 2 tools that WE wrote in Python:
+it can use 3 tools that WE wrote in Python:
     1. calculate(expression) -> does math,       e.g. "0.15 * 2400" -> 360
     2. web_search(query)     -> searches the web (Tavily), e.g. "PM of Japan"
+    3. check_pnr_status(pnr) -> Indian Railways PNR status, e.g. "2400285240"
 
 THE MOST IMPORTANT IDEA
 -----------------------
@@ -82,6 +83,7 @@ import ast
 import math
 import operator
 
+import requests
 from dotenv import load_dotenv
 from groq import Groq
 from tavily import TavilyClient
@@ -215,6 +217,137 @@ def web_search(query: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Tool 3: check_pnr_status (ConfirmTkt API)
+# ---------------------------------------------------------------------------
+# The API URL has the PNR number inside it:
+#   https://cttrainsapi.confirmtkt.com/api/v2/ctpro/mweb/<PNR>?querysource=...
+# It must be called with POST (GET returns "405 Method Not Allowed") and the
+# JSON body must contain "proPlanName" (without it the API returns 400).
+PNR_API_URL = "https://cttrainsapi.confirmtkt.com/api/v2/ctpro/mweb/{pnr}"
+PNR_API_PARAMS = {
+    "querysource": "ct-web",
+    "locale": "en",
+    "getHighChanceText": "false",
+    "livePnr": "false",
+}
+
+
+BERTH_TYPES = {
+    "LB": "Lower",
+    "MB": "Middle",
+    "UB": "Upper",
+    "SL": "Side Lower",
+    "SU": "Side Upper",
+    "SM": "Side Middle",
+    "WS": "Window Seat",
+    "MS": "Middle Seat",
+    "AS": "Aisle Seat",
+}
+
+
+def _passenger_status(p: dict) -> dict:
+    """Build the status for ONE passenger. Adds the seat only if confirmed."""
+    # " ".join(split()) turns "WL  72" (two spaces) into "WL 72".
+    status = " ".join((p.get("currentStatus") or "").split())
+    result = {"passenger": p.get("number"), "current_status": status}
+
+    # How do we know the ticket is confirmed?
+    #   currentStatusNew is a short code: "WL" = waiting list, "RAC" = shared
+    #   berth, "CNF" = confirmed. Sometimes it's empty but the status text
+    #   itself starts with "CNF", so we check both.
+    #
+    # Where the seat is in the response (per passenger):
+    #   currentCoachId   -> coach, e.g. "B3"
+    #   currentBerthNo   -> seat number, e.g. "45"
+    #   currentBerthCode -> berth type code, e.g. "LB" (Lower Berth)
+    # For a waiting-list ticket these are empty or not a real seat,
+    # which is why we only show them when confirmed.
+    status_code = (p.get("currentStatusNew") or "").strip().upper()
+    is_confirmed = status_code == "CNF" or status.upper().startswith("CNF")
+
+    if is_confirmed:
+        coach = (p.get("currentCoachId") or "").strip()
+        berth = str(p.get("currentBerthNo") or "").strip()
+        berth_code = (p.get("currentBerthCode") or "").strip().upper()
+
+        if coach or berth:
+            seat = f"Coach {coach}, Berth {berth}" if coach else f"Berth {berth}"
+            if berth_code:
+                seat += f" ({BERTH_TYPES.get(berth_code, berth_code)})"
+        else:
+            # Confirmed, but the seat is assigned only after the chart is prepared
+            seat = "Confirmed - seat will be allotted after chart preparation"
+        result["seat"] = seat
+
+    return result
+
+
+def check_pnr_status(pnr: str) -> dict:
+    """Fetch Indian Railways PNR status for the given 10-digit PNR number."""
+    # Keep only digits, so "240-028-5240" or "PNR 2400285240" also work
+    pnr = "".join(ch for ch in str(pnr) if ch.isdigit())
+    if len(pnr) != 10:
+        return {"pnr": pnr, "error": "A PNR number must have exactly 10 digits."}
+
+    try:
+        response = requests.post(
+            PNR_API_URL.format(pnr=pnr),
+            params=PNR_API_PARAMS,
+            json={"proPlanName": "CP1", "emailId": "", "tempToken": ""},
+            timeout=15,
+        )
+        response.raise_for_status()
+        data = response.json().get("data", {}).get("pnrResponse") or {}
+    except Exception as e:
+        return {"pnr": pnr, "error": f"Could not fetch PNR status: {e}"}
+
+    if not data or data.get("error"):
+        return {"pnr": pnr, "error": data.get("error") or "PNR not found or invalid."}
+
+    # The API returns a lot of fields (ads, ratings, ...). We pick only:
+    #   train name, train number, current status, source and destination.
+    #
+    # Where each value lives in the response JSON:
+    #   data -> pnrResponse -> trainName           e.g. "RJPB TEJAS RAJ"
+    #   data -> pnrResponse -> trainNo             e.g. "12310"
+    #   data -> pnrResponse -> sourceName / from   e.g. "New Delhi" / "NDLS"
+    #   data -> pnrResponse -> reservationUptoName / to
+    #                                              e.g. "Patna Junction" / "PNBE"
+    #   data -> pnrResponse -> passengerStatus     (a LIST, one item per passenger)
+    #                       -> currentStatus       e.g. "WL  72"
+    train_name = data.get("trainName")
+    train_number = data.get("trainNo")
+    source = f"{data.get('sourceName')} ({data.get('from')})"
+    destination = f"{data.get('reservationUptoName')} ({data.get('to')})"
+
+    # One ticket can have many passengers, so we loop over the list.
+    current_status = [_passenger_status(p) for p in data.get("passengerStatus", [])]
+
+    print("\n  ----- PNR STATUS -----")
+    print(f"  Train Name   : {train_name}")
+    print(f"  Train Number : {train_number}")
+    print(f"  Source       : {source}")
+    print(f"  Destination  : {destination}")
+    for p in current_status:
+        line = f"  Passenger {p['passenger']}  : {p['current_status']}"
+        if "seat" in p:
+            line += f"  ->  Seat: {p['seat']}"
+        print(line)
+    print("  ----------------------\n")
+
+    # Only these fields are sent back to the LLM, so its answer
+    # talks about exactly this information.
+    return {
+        "pnr": pnr,
+        "train_name": train_name,
+        "train_number": train_number,
+        "source": source,
+        "destination": destination,
+        "current_status": current_status,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Tool definitions (JSON schema sent to the LLM)
 # ---------------------------------------------------------------------------
 # HOW TOOL CALLING WORKS
@@ -276,12 +409,38 @@ tools = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_pnr_status",
+            "description": (
+                "Get the live status of an Indian Railways train ticket using its "
+                "10-digit PNR number. Use this whenever the user asks about PNR "
+                "status, ticket status, waitlist, confirmation, coach or berth. "
+                "Returns train name/number, source, destination and each passenger's "
+                "current status, plus the seat (coach and berth) for confirmed "
+                "passengers. If the user has not given a PNR number, ask "
+                "for it instead of guessing."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pnr": {
+                        "type": "string",
+                        "description": "The 10-digit PNR number given by the user, e.g. '2400285240'",
+                    }
+                },
+                "required": ["pnr"],
+            },
+        },
+    },
 ]
 
 # Maps the tool name the LLM sends back -> the actual Python function to run.
 available_functions = {
     "calculate": calculate,
     "web_search": web_search,
+    "check_pnr_status": check_pnr_status,
 }
 
 
@@ -289,9 +448,11 @@ available_functions = {
 # Agent loop
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = (
-    "You are a helpful assistant with access to two tools. "
+    "You are a helpful assistant with access to three tools. "
     "Use the 'calculate' tool for any math calculation instead of computing it yourself. "
     "Use the 'web_search' tool for facts, current events, or anything you are unsure about. "
+    "Use the 'check_pnr_status' tool when the user asks about a train ticket / PNR status. "
+    "Never invent a PNR number; if the user did not provide one, ask them for it. "
     "You may call tools multiple times, e.g. search first and then calculate with the result. "
     "Give a clear, concise final answer."
 )
@@ -415,7 +576,7 @@ def run_agent(user_query: str) -> str:
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    print("Math & Web Search Agent (type 'exit' to quit)")
+    print("Math, Web Search & PNR Agent (type 'exit' to quit)")
     while True:
         user_input = input("\nYou: ").strip()
         if user_input.lower() in ("exit", "quit"):
